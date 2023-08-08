@@ -3,98 +3,84 @@
 
 use boringtun::device::drop_privileges::drop_privileges;
 use boringtun::device::{DeviceConfig, DeviceHandle};
-use clap::{Arg, Command};
+use clap::{command, Parser};
 use daemonize::Daemonize;
+use std::borrow::Cow;
 use std::fs::File;
 use std::os::unix::net::UnixDatagram;
 use std::process::exit;
 use tracing::Level;
 
-fn check_tun_name(_v: String) -> Result<(), String> {
+fn check_tun_name(v: &str) -> Result<String, String> {
     #[cfg(any(target_os = "macos", target_os = "ios"))]
     {
-        if boringtun::device::tun::parse_utun_name(&_v).is_ok() {
-            Ok(())
+        if boringtun::device::tun::parse_utun_name(v).is_ok() {
+            Ok(v.to_owned())
         } else {
             Err("Tunnel name must have the format 'utun[0-9]+', use 'utun' for automatic assignment".to_owned())
         }
     }
     #[cfg(not(target_os = "macos"))]
     {
-        Ok(())
+        Ok(v.to_owned())
+    }
+}
+
+#[derive(Debug, Parser)]
+#[command(author = "Vlad Krasnov <vlad@cloudflare.com>", version = env!("CARGO_PKG_VERSION"))]
+struct Args {
+    /// The name of the created interface
+    #[clap(value_parser = check_tun_name)]
+    interface_name: String,
+
+    /// Run and log in the foreground
+    #[clap(long, short)]
+    foreground: bool,
+
+    /// Number of OS threads to use
+    #[clap(long, short, env = "WG_THREADS", default_value_t = 4)]
+    threads: usize,
+
+    /// Log verbosity
+    #[clap(long, short, env = "WG_LOG_LEVEL", default_value_t = Level::ERROR)]
+    verbosity: Level,
+
+    /// File descriptor for the user API. Linux only.
+    #[clap(long, env = "WG_UAPI_FD", default_value_t = -1)]
+    uapi_fd: i32,
+
+    /// File descriptor for an already-existing TUN device
+    #[clap(long, env = "WG_TUN_FD", default_value_t = -1)]
+    tun_fd: i32,
+
+    /// Log file
+    #[clap(long, short, env = "WG_LOG_FILE", default_value_t = String::from("/tmp/boringtun.out"))]
+    log: String,
+
+    /// Do not drop sudo privileges
+    #[clap(long, env = "WG_SUDO")]
+    disable_drop_privileges: bool,
+
+    /// Disable connected UDP sockets to each peer
+    #[clap(long)]
+    disable_connected_udp: bool,
+
+    /// Disable using multiple queues for the tunnel interface. Linux only.
+    #[clap(long)]
+    disable_multi_queue: bool,
+}
+
+impl Args {
+    pub fn tun_name(&self) -> Cow<'_, str> {
+        if self.tun_fd >= 0 {
+            return Cow::from(self.tun_fd.to_string());
+        }
+        Cow::from(&self.interface_name)
     }
 }
 
 fn main() {
-    let matches = Command::new("boringtun")
-        .version(env!("CARGO_PKG_VERSION"))
-        .author("Vlad Krasnov <vlad@cloudflare.com>")
-        .args(&[
-            Arg::new("INTERFACE_NAME")
-                .required(true)
-                .takes_value(true)
-                .validator(|tunname| check_tun_name(tunname.to_string()))
-                .help("The name of the created interface"),
-            Arg::new("foreground")
-                .long("foreground")
-                .short('f')
-                .help("Run and log in the foreground"),
-            Arg::new("threads")
-                .takes_value(true)
-                .long("threads")
-                .short('t')
-                .env("WG_THREADS")
-                .help("Number of OS threads to use")
-                .default_value("4"),
-            Arg::new("verbosity")
-                .takes_value(true)
-                .long("verbosity")
-                .short('v')
-                .env("WG_LOG_LEVEL")
-                .possible_values(["error", "info", "debug", "trace"])
-                .help("Log verbosity")
-                .default_value("error"),
-            Arg::new("uapi-fd")
-                .long("uapi-fd")
-                .env("WG_UAPI_FD")
-                .help("File descriptor for the user API")
-                .default_value("-1"),
-            Arg::new("tun-fd")
-                .long("tun-fd")
-                .env("WG_TUN_FD")
-                .help("File descriptor for an already-existing TUN device")
-                .default_value("-1"),
-            Arg::new("log")
-                .takes_value(true)
-                .long("log")
-                .short('l')
-                .env("WG_LOG_FILE")
-                .help("Log file")
-                .default_value("/tmp/boringtun.out"),
-            Arg::new("disable-drop-privileges")
-                .long("disable-drop-privileges")
-                .env("WG_SUDO")
-                .help("Do not drop sudo privileges"),
-            Arg::new("disable-connected-udp")
-                .long("disable-connected-udp")
-                .help("Disable connected UDP sockets to each peer"),
-            #[cfg(target_os = "linux")]
-            Arg::new("disable-multi-queue")
-                .long("disable-multi-queue")
-                .help("Disable using multiple queues for the tunnel interface"),
-        ])
-        .get_matches();
-
-    let background = !matches.is_present("foreground");
-    #[cfg(target_os = "linux")]
-    let uapi_fd: i32 = matches.value_of_t("uapi-fd").unwrap_or_else(|e| e.exit());
-    let tun_fd: isize = matches.value_of_t("tun-fd").unwrap_or_else(|e| e.exit());
-    let mut tun_name = matches.value_of("INTERFACE_NAME").unwrap();
-    if tun_fd >= 0 {
-        tun_name = matches.value_of("tun-fd").unwrap();
-    }
-    let n_threads: usize = matches.value_of_t("threads").unwrap_or_else(|e| e.exit());
-    let log_level: Level = matches.value_of_t("verbosity").unwrap_or_else(|e| e.exit());
+    let args = Args::parse();
 
     // Create a socketpair to communicate between forked processes
     let (sock1, sock2) = UnixDatagram::pair().unwrap();
@@ -102,18 +88,16 @@ fn main() {
 
     let _guard;
 
-    if background {
-        let log = matches.value_of("log").unwrap();
-
-        let log_file =
-            File::create(log).unwrap_or_else(|_| panic!("Could not create log file {}", log));
+    if !args.foreground {
+        let log_file = File::create(&args.log)
+            .unwrap_or_else(|_| panic!("Could not create log file {}", args.log));
 
         let (non_blocking, guard) = tracing_appender::non_blocking(log_file);
 
         _guard = guard;
 
         tracing_subscriber::fmt()
-            .with_max_level(log_level)
+            .with_max_level(args.verbosity)
             .with_writer(non_blocking)
             .with_ansi(false)
             .init();
@@ -140,30 +124,30 @@ fn main() {
     } else {
         tracing_subscriber::fmt()
             .pretty()
-            .with_max_level(log_level)
+            .with_max_level(args.verbosity)
             .init();
     }
 
     let config = DeviceConfig {
-        n_threads,
+        n_threads: args.threads,
         #[cfg(target_os = "linux")]
-        uapi_fd,
-        use_connected_socket: !matches.is_present("disable-connected-udp"),
+        uapi_fd: args.uapi_fd,
+        use_connected_socket: !args.disable_connected_udp,
         #[cfg(target_os = "linux")]
-        use_multi_queue: !matches.is_present("disable-multi-queue"),
+        use_multi_queue: !args.disable_multi_queue,
     };
 
-    let mut device_handle: DeviceHandle = match DeviceHandle::new(tun_name, config) {
+    let mut device_handle: DeviceHandle = match DeviceHandle::new(&args.tun_name(), config) {
         Ok(d) => d,
         Err(e) => {
             // Notify parent that tunnel initialization failed
-            tracing::error!(message = "Failed to initialize tunnel", error=?e);
+            tracing::error!(message = "Failed to initialize tunnel", error = ?e);
             sock1.send(&[0]).unwrap();
             exit(1);
         }
     };
 
-    if !matches.is_present("disable-drop-privileges") {
+    if !args.disable_drop_privileges {
         if let Err(e) = drop_privileges() {
             tracing::error!(message = "Failed to drop privileges", error = ?e);
             sock1.send(&[0]).unwrap();
