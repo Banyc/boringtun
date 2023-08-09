@@ -165,7 +165,7 @@ impl Tunn {
         }
     }
 
-    pub fn update_timers<'a>(&mut self, dst: &'a mut [u8]) -> TunnResult<'a> {
+    pub fn update_timers<'buf>(&mut self, dst: &'buf mut [u8]) -> TunnResult<'buf> {
         let mut handshake_initiation_required = false;
         let mut keepalive_required = false;
 

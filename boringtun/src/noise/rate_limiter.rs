@@ -112,13 +112,13 @@ impl RateLimiter {
         self.count.fetch_add(1, Ordering::SeqCst) >= self.limit
     }
 
-    pub(crate) fn format_cookie_reply<'a>(
+    pub(crate) fn format_cookie_reply<'dst_buf>(
         &self,
         idx: u32,
         cookie: Cookie,
         mac1: &[u8],
-        dst: &'a mut [u8],
-    ) -> Result<&'a mut [u8], WireGuardError> {
+        dst: &'dst_buf mut [u8],
+    ) -> Result<&'dst_buf mut [u8], WireGuardError> {
         if dst.len() < super::COOKIE_REPLY_SZ {
             return Err(WireGuardError::DestinationBufferTooSmall);
         }
@@ -150,12 +150,12 @@ impl RateLimiter {
     }
 
     /// Verify the MAC fields on the datagram, and apply rate limiting if needed
-    pub fn verify_packet<'a, 'b>(
+    pub fn verify_packet<'src_buf, 'dst_buf>(
         &self,
         src_addr: Option<IpAddr>,
-        src: &'a [u8],
-        dst: &'b mut [u8],
-    ) -> Result<Packet<'a>, TunnResult<'b>> {
+        src: &'src_buf [u8],
+        dst: &'dst_buf mut [u8],
+    ) -> Result<Packet<'src_buf>, TunnResult<'dst_buf>> {
         let packet = Tunn::parse_incoming_packet(src)?;
 
         // Verify and rate limit handshake messages only

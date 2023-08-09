@@ -42,16 +42,16 @@ const MAX_QUEUE_DEPTH: usize = 256;
 const N_SESSIONS: usize = 8;
 
 #[derive(Debug)]
-pub enum TunnResult<'a> {
+pub enum TunnResult<'buf> {
     Done,
     Err(WireGuardError),
-    WriteToNetwork(&'a mut [u8]),
-    WriteToTunnelV4(&'a mut [u8], Ipv4Addr),
-    WriteToTunnelV6(&'a mut [u8], Ipv6Addr),
+    WriteToNetwork(&'buf mut [u8]),
+    WriteToTunnelV4(&'buf mut [u8], Ipv4Addr),
+    WriteToTunnelV6(&'buf mut [u8], Ipv6Addr),
 }
 
-impl<'a> From<WireGuardError> for TunnResult<'a> {
-    fn from(err: WireGuardError) -> TunnResult<'a> {
+impl<'buf> From<WireGuardError> for TunnResult<'buf> {
+    fn from(err: WireGuardError) -> TunnResult<'buf> {
         TunnResult::Err(err)
     }
 }
@@ -85,42 +85,42 @@ const COOKIE_REPLY_SZ: usize = 64;
 const DATA_OVERHEAD_SZ: usize = 32;
 
 #[derive(Debug)]
-pub struct HandshakeInit<'a> {
+pub struct HandshakeInit<'buf> {
     sender_idx: u32,
-    unencrypted_ephemeral: &'a [u8; 32],
-    encrypted_static: &'a [u8],
-    encrypted_timestamp: &'a [u8],
+    unencrypted_ephemeral: &'buf [u8; 32],
+    encrypted_static: &'buf [u8],
+    encrypted_timestamp: &'buf [u8],
 }
 
 #[derive(Debug)]
-pub struct HandshakeResponse<'a> {
+pub struct HandshakeResponse<'buf> {
     sender_idx: u32,
     pub receiver_idx: u32,
-    unencrypted_ephemeral: &'a [u8; 32],
-    encrypted_nothing: &'a [u8],
+    unencrypted_ephemeral: &'buf [u8; 32],
+    encrypted_nothing: &'buf [u8],
 }
 
 #[derive(Debug)]
-pub struct PacketCookieReply<'a> {
+pub struct PacketCookieReply<'buf> {
     pub receiver_idx: u32,
-    nonce: &'a [u8],
-    encrypted_cookie: &'a [u8],
+    nonce: &'buf [u8],
+    encrypted_cookie: &'buf [u8],
 }
 
 #[derive(Debug)]
-pub struct PacketData<'a> {
+pub struct PacketData<'buf> {
     pub receiver_idx: u32,
     counter: u64,
-    encrypted_encapsulated_packet: &'a [u8],
+    encrypted_encapsulated_packet: &'buf [u8],
 }
 
 /// Describes a packet from network
 #[derive(Debug)]
-pub enum Packet<'a> {
-    HandshakeInit(HandshakeInit<'a>),
-    HandshakeResponse(HandshakeResponse<'a>),
-    PacketCookieReply(PacketCookieReply<'a>),
-    PacketData(PacketData<'a>),
+pub enum Packet<'buf> {
+    HandshakeInit(HandshakeInit<'buf>),
+    HandshakeResponse(HandshakeResponse<'buf>),
+    PacketCookieReply(PacketCookieReply<'buf>),
+    PacketData(PacketData<'buf>),
 }
 
 impl Tunn {
@@ -251,9 +251,9 @@ impl Tunn {
     /// # Panics
     /// Panics if dst buffer is too small.
     /// Size of dst should be at least src.len() + 32, and no less than 148 bytes.
-    pub fn encapsulate<'a>(&mut self, src: &[u8], dst: &'a mut [u8]) -> TunnResult<'a> {
+    pub fn encapsulate<'buf>(&mut self, src: &[u8], dst: &'buf mut [u8]) -> TunnResult<'buf> {
         let current = self.current;
-        if let Some(ref session) = self.sessions[current % N_SESSIONS] {
+        if let Some(session) = &self.sessions[current % N_SESSIONS] {
             // Send the packet using an established session
             let packet = session.format_packet_data(src, dst);
             self.timer_tick(TimerName::TimeLastPacketSent);
@@ -277,12 +277,12 @@ impl Tunn {
     /// If the result is of type TunnResult::WriteToNetwork, should repeat the call with empty datagram,
     /// until TunnResult::Done is returned. If batch processing packets, it is OK to defer until last
     /// packet is processed.
-    pub fn decapsulate<'a>(
+    pub fn decapsulate<'buf>(
         &mut self,
         src_addr: Option<IpAddr>,
         datagram: &[u8],
-        dst: &'a mut [u8],
-    ) -> TunnResult<'a> {
+        dst: &'buf mut [u8],
+    ) -> TunnResult<'buf> {
         if datagram.is_empty() {
             // Indicates a repeated call
             return self.send_queued_packet(dst);
@@ -305,11 +305,11 @@ impl Tunn {
         self.handle_verified_packet(packet, dst)
     }
 
-    pub(crate) fn handle_verified_packet<'a>(
+    pub(crate) fn handle_verified_packet<'buf>(
         &mut self,
         packet: Packet,
-        dst: &'a mut [u8],
-    ) -> TunnResult<'a> {
+        dst: &'buf mut [u8],
+    ) -> TunnResult<'buf> {
         match packet {
             Packet::HandshakeInit(p) => self.handle_handshake_init(p, dst),
             Packet::HandshakeResponse(p) => self.handle_handshake_response(p, dst),
@@ -319,11 +319,11 @@ impl Tunn {
         .unwrap_or_else(TunnResult::from)
     }
 
-    fn handle_handshake_init<'a>(
+    fn handle_handshake_init<'buf>(
         &mut self,
         p: HandshakeInit,
-        dst: &'a mut [u8],
-    ) -> Result<TunnResult<'a>, WireGuardError> {
+        dst: &'buf mut [u8],
+    ) -> Result<TunnResult<'buf>, WireGuardError> {
         tracing::debug!(
             message = "Received handshake_initiation",
             remote_idx = p.sender_idx
@@ -344,11 +344,11 @@ impl Tunn {
         Ok(TunnResult::WriteToNetwork(packet))
     }
 
-    fn handle_handshake_response<'a>(
+    fn handle_handshake_response<'buf>(
         &mut self,
         p: HandshakeResponse,
-        dst: &'a mut [u8],
-    ) -> Result<TunnResult<'a>, WireGuardError> {
+        dst: &'buf mut [u8],
+    ) -> Result<TunnResult<'buf>, WireGuardError> {
         tracing::debug!(
             message = "Received handshake_response",
             local_idx = p.receiver_idx,
@@ -372,10 +372,10 @@ impl Tunn {
         Ok(TunnResult::WriteToNetwork(keepalive_packet)) // Send a keepalive as a response
     }
 
-    fn handle_cookie_reply<'a>(
+    fn handle_cookie_reply<'buf>(
         &mut self,
         p: PacketCookieReply,
-    ) -> Result<TunnResult<'a>, WireGuardError> {
+    ) -> Result<TunnResult<'buf>, WireGuardError> {
         tracing::debug!(
             message = "Received cookie_reply",
             local_idx = p.receiver_idx
@@ -407,11 +407,11 @@ impl Tunn {
     }
 
     /// Decrypts a data packet, and stores the decapsulated packet in dst.
-    fn handle_data<'a>(
+    fn handle_data<'buf>(
         &mut self,
         packet: PacketData,
-        dst: &'a mut [u8],
-    ) -> Result<TunnResult<'a>, WireGuardError> {
+        dst: &'buf mut [u8],
+    ) -> Result<TunnResult<'buf>, WireGuardError> {
         let r_idx = packet.receiver_idx as usize;
         let idx = r_idx % N_SESSIONS;
 
@@ -434,11 +434,11 @@ impl Tunn {
 
     /// Formats a new handshake initiation message and store it in dst. If force_resend is true will send
     /// a new handshake, even if a handshake is already in progress (for example when a handshake times out)
-    pub fn format_handshake_initiation<'a>(
+    pub fn format_handshake_initiation<'buf>(
         &mut self,
-        dst: &'a mut [u8],
+        dst: &'buf mut [u8],
         force_resend: bool,
-    ) -> TunnResult<'a> {
+    ) -> TunnResult<'buf> {
         if self.handshake.is_in_progress() && !force_resend {
             return TunnResult::Done;
         }
@@ -465,7 +465,7 @@ impl Tunn {
 
     /// Check if an IP packet is v4 or v6, truncate to the length indicated by the length field
     /// Returns the truncated packet and the source IP as TunnResult
-    fn validate_decapsulated_packet<'a>(&mut self, packet: &'a mut [u8]) -> TunnResult<'a> {
+    fn validate_decapsulated_packet<'buf>(&mut self, packet: &'buf mut [u8]) -> TunnResult<'buf> {
         let (computed_len, src_ip_address) = match packet.len() {
             0 => return TunnResult::Done, // This is keepalive, and not an error
             _ if packet[0] >> 4 == 4 && packet.len() >= IPV4_MIN_HEADER_SIZE => {
@@ -511,7 +511,7 @@ impl Tunn {
     }
 
     /// Get a packet from the queue, and try to encapsulate it
-    fn send_queued_packet<'a>(&mut self, dst: &'a mut [u8]) -> TunnResult<'a> {
+    fn send_queued_packet<'buf>(&mut self, dst: &'buf mut [u8]) -> TunnResult<'buf> {
         if let Some(packet) = self.dequeue_packet() {
             match self.encapsulate(&packet, dst) {
                 TunnResult::Err(_) => {
@@ -552,7 +552,7 @@ impl Tunn {
         let mut total_weight = 0.0;
 
         for i in 0..N_SESSIONS {
-            if let Some(ref session) = self.sessions[(session_idx.wrapping_sub(i)) % N_SESSIONS] {
+            if let Some(session) = &self.sessions[(session_idx.wrapping_sub(i)) % N_SESSIONS] {
                 let (expected, received) = session.current_packet_cnt();
 
                 let loss = if expected == 0 {

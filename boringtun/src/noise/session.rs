@@ -193,7 +193,11 @@ impl Session {
     /// src - an IP packet from the interface
     /// dst - pre-allocated space to hold the encapsulating UDP packet to send over the network
     /// returns the size of the formatted packet
-    pub(super) fn format_packet_data<'a>(&self, src: &[u8], dst: &'a mut [u8]) -> &'a mut [u8] {
+    pub(super) fn format_packet_data<'dst_buf>(
+        &self,
+        src: &[u8],
+        dst: &'dst_buf mut [u8],
+    ) -> &'dst_buf mut [u8] {
         if dst.len() < src.len() + super::DATA_OVERHEAD_SZ {
             panic!("The destination buffer is too small");
         }
@@ -233,11 +237,11 @@ impl Session {
     /// dst - pre-allocated space to hold the encapsulated IP packet, to send to the interface
     ///       dst will always take less space than src
     /// return the size of the encapsulated packet on success
-    pub(super) fn receive_packet_data<'a>(
+    pub(super) fn receive_packet_data<'dst_buf>(
         &self,
         packet: PacketData,
-        dst: &'a mut [u8],
-    ) -> Result<&'a mut [u8], WireGuardError> {
+        dst: &'dst_buf mut [u8],
+    ) -> Result<&'dst_buf mut [u8], WireGuardError> {
         let ct_len = packet.encrypted_encapsulated_packet.len();
         if dst.len() < ct_len {
             // This is a very incorrect use of the library, therefore panic and not error
