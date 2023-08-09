@@ -323,12 +323,18 @@ pub struct HalfHandshake {
     pub peer_static_public: [u8; 32],
 }
 
-pub fn parse_handshake_anon(
+struct DecryptPeerStaticPublicResult {
+    pub peer_static_public: [u8; KEY_LEN],
+    pub hash: [u8; KEY_LEN],
+    pub chaining_key: [u8; KEY_LEN],
+    pub peer_ephemeral_public: x25519::PublicKey,
+}
+
+fn decrypt_peer_static_public(
     static_private: &x25519::StaticSecret,
     static_public: &x25519::PublicKey,
     packet: &HandshakeInit,
-) -> Result<HalfHandshake, WireGuardError> {
-    let peer_index = packet.sender_idx;
+) -> Result<DecryptPeerStaticPublicResult, WireGuardError> {
     // initiator.chaining_key = HASH(CONSTRUCTION)
     let mut chaining_key = INITIAL_CHAIN_KEY;
     // initiator.hash = HASH(HASH(initiator.chaining_key || IDENTIFIER) || responder.static_public)
@@ -361,6 +367,22 @@ pub fn parse_handshake_anon(
         packet.encrypted_static,
         &hash,
     )?;
+    Ok(DecryptPeerStaticPublicResult {
+        peer_static_public,
+        hash,
+        chaining_key,
+        peer_ephemeral_public,
+    })
+}
+
+pub fn parse_handshake_anon(
+    static_private: &x25519::StaticSecret,
+    static_public: &x25519::PublicKey,
+    packet: &HandshakeInit,
+) -> Result<HalfHandshake, WireGuardError> {
+    let peer_index = packet.sender_idx;
+    let peer_static_public =
+        decrypt_peer_static_public(static_private, static_public, packet)?.peer_static_public;
 
     Ok(HalfHandshake {
         peer_index,
@@ -484,47 +506,21 @@ impl Handshake {
         packet: HandshakeInit,
         dst: &'a mut [u8],
     ) -> Result<(&'a mut [u8], Session), WireGuardError> {
-        // initiator.chaining_key = HASH(CONSTRUCTION)
-        let mut chaining_key = INITIAL_CHAIN_KEY;
-        // initiator.hash = HASH(HASH(initiator.chaining_key || IDENTIFIER) || responder.static_public)
-        let mut hash = INITIAL_CHAIN_HASH;
-        hash = b2s_hash(&hash, self.params.static_public.as_bytes());
-        // msg.sender_index = little_endian(initiator.sender_index)
         let peer_index = packet.sender_idx;
-        // msg.unencrypted_ephemeral = DH_PUBKEY(initiator.ephemeral_private)
-        let peer_ephemeral_public = x25519::PublicKey::from(*packet.unencrypted_ephemeral);
-        // initiator.hash = HASH(initiator.hash || msg.unencrypted_ephemeral)
-        hash = b2s_hash(&hash, peer_ephemeral_public.as_bytes());
-        // temp = HMAC(initiator.chaining_key, msg.unencrypted_ephemeral)
-        // initiator.chaining_key = HMAC(temp, 0x1)
-        chaining_key = b2s_hmac(
-            &b2s_hmac(&chaining_key, peer_ephemeral_public.as_bytes()),
-            &[0x01],
-        );
-        // temp = HMAC(initiator.chaining_key, DH(initiator.ephemeral_private, responder.static_public))
-        let ephemeral_shared = self
-            .params
-            .static_private
-            .diffie_hellman(&peer_ephemeral_public);
-        let temp = b2s_hmac(&chaining_key, &ephemeral_shared.to_bytes());
-        // initiator.chaining_key = HMAC(temp, 0x1)
-        chaining_key = b2s_hmac(&temp, &[0x01]);
-        // key = HMAC(temp, initiator.chaining_key || 0x2)
-        let key = b2s_hmac2(&temp, &chaining_key, &[0x02]);
-
-        let mut peer_static_public_decrypted = [0u8; KEY_LEN];
-        // msg.encrypted_static = AEAD(key, 0, initiator.static_public, initiator.hash)
-        aead_chacha20_open(
-            &mut peer_static_public_decrypted,
-            &key,
-            0,
-            packet.encrypted_static,
-            &hash,
+        let DecryptPeerStaticPublicResult {
+            peer_static_public,
+            mut hash,
+            mut chaining_key,
+            peer_ephemeral_public,
+        } = decrypt_peer_static_public(
+            &self.params.static_private,
+            &self.params.static_public,
+            &packet,
         )?;
 
         ring::constant_time::verify_slices_are_equal(
             self.params.peer_static_public.as_bytes(),
-            &peer_static_public_decrypted,
+            &peer_static_public,
         )
         .map_err(|_| WireGuardError::WrongKey)?;
 
