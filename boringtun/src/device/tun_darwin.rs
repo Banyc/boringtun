@@ -11,6 +11,7 @@ use std::ptr::null_mut;
 
 const CTRL_NAME: &[u8] = b"com.apple.net.utun_control";
 
+#[allow(non_camel_case_types)]
 #[repr(C)]
 pub struct ctl_info {
     pub ctl_id: u32,
@@ -39,6 +40,7 @@ union IfrIfru {
     ifru_functional_type: u32,
 }
 
+#[allow(non_camel_case_types)]
 #[repr(C)]
 pub struct ifreq {
     ifr_name: [c_uchar; IF_NAMESIZE],
