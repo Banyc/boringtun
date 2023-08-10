@@ -12,16 +12,13 @@ use std::process::exit;
 use tracing::Level;
 
 fn check_tun_name(v: &str) -> Result<String, String> {
-    #[cfg(any(target_os = "macos", target_os = "ios"))]
-    {
+    if cfg!(any(target_os = "macos", target_os = "ios")) {
         if boringtun::device::tun::parse_utun_name(v).is_ok() {
             Ok(v.to_owned())
         } else {
             Err("Tunnel name must have the format 'utun[0-9]+', use 'utun' for automatic assignment".to_owned())
         }
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
+    } else {
         Ok(v.to_owned())
     }
 }
